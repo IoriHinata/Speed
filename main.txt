@@ -1,0 +1,2513 @@
+import 'dart:async';
+import 'dart:math';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final store = await GameStore.create();
+  runApp(SpeedSanctuaryApp(store: store));
+}
+
+// ============================================================
+// ОБИТЕЛЬ СКОРОСТИ — SINGLE FILE MVP
+// Flutter / Dart
+//
+// pubspec.yaml dependency:
+//   shared_preferences: ^2.3.2
+//
+// Этот файл намеренно самодостаточный:
+// Domain + Services + Storage + UI + Game + Mock integrations.
+// В production внешние сервисы можно заменить реализациями
+// соответствующих интерфейсов без изменения UI и domain.
+// ============================================================
+
+// -----------------------------
+// ENUMS
+// -----------------------------
+
+enum BodyType {
+  sedan,
+  hatchback,
+  coupe,
+  convertible,
+  wagon,
+  suv,
+  crossover,
+  pickup,
+  van,
+  supercar,
+  hypercar,
+  motorcycle,
+}
+
+enum Rarity { common, uncommon, rare, epic, legendary }
+
+enum CarStatus { garaged, outside, stolen, inChase, recovered }
+
+enum UpgradeType { engine, handling, body }
+
+extension BodyTypeX on BodyType {
+  String get label => switch (this) {
+        BodyType.sedan => 'Седан',
+        BodyType.hatchback => 'Хэтчбек',
+        BodyType.coupe => 'Купе',
+        BodyType.convertible => 'Кабриолет',
+        BodyType.wagon => 'Универсал',
+        BodyType.suv => 'SUV',
+        BodyType.crossover => 'Кроссовер',
+        BodyType.pickup => 'Пикап',
+        BodyType.van => 'Фургон',
+        BodyType.supercar => 'Суперкар',
+        BodyType.hypercar => 'Гиперкар',
+        BodyType.motorcycle => 'Мотоцикл',
+      };
+}
+
+extension RarityX on Rarity {
+  String get label => switch (this) {
+        Rarity.common => 'Обычная',
+        Rarity.uncommon => 'Необычная',
+        Rarity.rare => 'Редкая',
+        Rarity.epic => 'Эпическая',
+        Rarity.legendary => 'Легендарная',
+      };
+
+  int get tier => index + 1;
+
+  Color get color => switch (this) {
+        Rarity.common => Colors.grey,
+        Rarity.uncommon => Colors.green,
+        Rarity.rare => Colors.blue,
+        Rarity.epic => Colors.purple,
+        Rarity.legendary => Colors.orange,
+      };
+}
+
+extension CarStatusX on CarStatus {
+  String get label => switch (this) {
+        CarStatus.garaged => 'В гараже',
+        CarStatus.outside => 'На улице',
+        CarStatus.stolen => 'Угнана',
+        CarStatus.inChase => 'В погоне',
+        CarStatus.recovered => 'Возвращена',
+      };
+}
+
+// -----------------------------
+// MODEL
+// -----------------------------
+
+class Car {
+  final String id;
+  final String brand;
+  final String model;
+  final String generation;
+  final BodyType bodyType;
+  final String color;
+  final Rarity rarity;
+  final int baseValue;
+  int currentValue;
+  int speed;
+  int handling;
+  int durability;
+  final int maxSpeed;
+  final int maxHandling;
+  final int maxDurability;
+  int level;
+  int experience;
+  int damage;
+  String? photoPath;
+  final DateTime discoveredAt;
+  CarStatus status;
+  int? garageSlot;
+
+  Car({
+    required this.id,
+    required this.brand,
+    required this.model,
+    required this.generation,
+    required this.bodyType,
+    required this.color,
+    required this.rarity,
+    required this.baseValue,
+    required this.currentValue,
+    required this.speed,
+    required this.handling,
+    required this.durability,
+    required this.maxSpeed,
+    required this.maxHandling,
+    required this.maxDurability,
+    required this.level,
+    required this.experience,
+    required this.damage,
+    required this.discoveredAt,
+    required this.status,
+    this.photoPath,
+    this.garageSlot,
+  });
+
+  String get title => '$brand $model';
+  bool get isInGarage => status == CarStatus.garaged;
+  bool get isUsable => status != CarStatus.stolen && status != CarStatus.inChase;
+
+  double get condition => 1 - damage.clamp(0, 100) / 100.0;
+
+  int get repairCost {
+    // 25% от стоимости восстановления полного повреждения.
+    return ((currentValue * (damage / 100)) * 0.25).round();
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'brand': brand,
+        'model': model,
+        'generation': generation,
+        'bodyType': bodyType.name,
+        'color': color,
+        'rarity': rarity.name,
+        'baseValue': baseValue,
+        'currentValue': currentValue,
+        'speed': speed,
+        'handling': handling,
+        'durability': durability,
+        'maxSpeed': maxSpeed,
+        'maxHandling': maxHandling,
+        'maxDurability': maxDurability,
+        'level': level,
+        'experience': experience,
+        'damage': damage,
+        'photoPath': photoPath,
+        'discoveredAt': discoveredAt.toIso8601String(),
+        'status': status.name,
+        'garageSlot': garageSlot,
+  };
+
+  factory Car.fromJson(Map<String, dynamic> j) => Car(
+        id: j['id'],
+        brand: j['brand'],
+        model: j['model'],
+        generation: j['generation'],
+        bodyType: BodyType.values.byName(j['bodyType']),
+        color: j['color'],
+        rarity: Rarity.values.byName(j['rarity']),
+        baseValue: j['baseValue'],
+        currentValue: j['currentValue'],
+        speed: j['speed'],
+        handling: j['handling'],
+        durability: j['durability'],
+        maxSpeed: j['maxSpeed'],
+        maxHandling: j['maxHandling'],
+        maxDurability: j['maxDurability'],
+        level: j['level'],
+        experience: j['experience'],
+        damage: j['damage'],
+        photoPath: j['photoPath'],
+        discoveredAt: DateTime.parse(j['discoveredAt']),
+        status: CarStatus.values.byName(j['status']),
+        garageSlot: j['garageSlot'],
+      );
+}
+
+// -----------------------------
+// RECOGNITION / PRIVACY
+// -----------------------------
+
+class RecognitionResult {
+  final String brand;
+  final String model;
+  final String generation;
+  final BodyType bodyType;
+  final String color;
+  final double confidence;
+
+  const RecognitionResult({
+    required this.brand,
+    required this.model,
+    required this.generation,
+    required this.bodyType,
+    required this.color,
+    required this.confidence,
+  });
+}
+
+abstract class VehicleRecognitionService {
+  Future<RecognitionResult> recognize(String imagePath);
+}
+
+class MockVehicleRecognitionService implements VehicleRecognitionService {
+  final Random _random = Random();
+
+  static const _vehicles = [
+    ['Toyota', 'Supra', 'A80', BodyType.coupe, 'Красный'],
+    ['BMW', 'M3', 'G80', BodyType.sedan, 'Синий'],
+    ['Porsche', '911', '992', BodyType.coupe, 'Жёлтый'],
+    ['Nissan', 'GT-R', 'R35', BodyType.coupe, 'Серый'],
+    ['Ford', 'Mustang', 'S650', BodyType.coupe, 'Зелёный'],
+    ['Lamborghini', 'Huracán', 'EVO', BodyType.supercar, 'Оранжевый'],
+    ['Tesla', 'Model S', 'Plaid', BodyType.sedan, 'Белый'],
+  ];
+
+  @override
+  Future<RecognitionResult> recognize(String imagePath) async {
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    final v = _vehicles[_random.nextInt(_vehicles.length)];
+    return RecognitionResult(
+      brand: v[0] as String,
+      model: v[1] as String,
+      generation: v[2] as String,
+      bodyType: v[3] as BodyType,
+      color: v[4] as String,
+      confidence: 0.86 + _random.nextDouble() * 0.12,
+    );
+  }
+}
+
+class PlateDetectionResult {
+  final bool detected;
+  final List<Rect> regions;
+
+  const PlateDetectionResult({required this.detected, required this.regions});
+}
+
+abstract class LicensePlateDetectionService {
+  Future<PlateDetectionResult> detect(String imagePath);
+}
+
+class MockLicensePlateDetectionService implements LicensePlateDetectionService {
+  @override
+  Future<PlateDetectionResult> detect(String imagePath) async {
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    // Реальный detector должен вернуть координаты областей номера.
+    // MVP не хранит и не выводит номер.
+    return const PlateDetectionResult(detected: true, regions: []);
+  }
+}
+
+abstract class ImagePrivacyService {
+  Future<String> maskPlates(String imagePath, PlateDetectionResult result);
+}
+
+class MockImagePrivacyService implements ImagePrivacyService {
+  @override
+  Future<String> maskPlates(
+    String imagePath,
+    PlateDetectionResult result,
+  ) async {
+    // В production здесь будет реальное размытие/маскирование.
+    // Важное правило MVP: номер не извлекается и не сохраняется.
+    return imagePath;
+  }
+}
+
+// -----------------------------
+// RARITY
+// -----------------------------
+
+class VehicleCatalogEntry {
+  final String brand;
+  final String model;
+  final int rarityScore;
+  final int prestige;
+  final int baseValue;
+  final int popularity;
+  final int sportiness;
+  final int collectability;
+
+  const VehicleCatalogEntry({
+    required this.brand,
+    required this.model,
+    required this.rarityScore,
+    required this.prestige,
+    required this.baseValue,
+    required this.popularity,
+    required this.sportiness,
+    required this.collectability,
+  });
+}
+
+class RarityService {
+  static const catalog = <VehicleCatalogEntry>[
+    VehicleCatalogEntry(
+      brand: 'Toyota',
+      model: 'Supra',
+      rarityScore: 65,
+      prestige: 58,
+      baseValue: 55000,
+      popularity: 70,
+      sportiness: 90,
+      collectability: 86,
+    ),
+    VehicleCatalogEntry(
+      brand: 'BMW',
+      model: 'M3',
+      rarityScore: 55,
+      prestige: 72,
+      baseValue: 85000,
+      popularity: 75,
+      sportiness: 86,
+      collectability: 72,
+    ),
+    VehicleCatalogEntry(
+      brand: 'Porsche',
+      model: '911',
+      rarityScore: 74,
+      prestige: 90,
+      baseValue: 140000,
+      popularity: 55,
+      sportiness: 95,
+      collectability: 92,
+    ),
+    VehicleCatalogEntry(
+      brand: 'Nissan',
+      model: 'GT-R',
+      rarityScore: 76,
+      prestige: 80,
+      baseValue: 120000,
+      popularity: 45,
+      sportiness: 98,
+      collectability: 94,
+    ),
+    VehicleCatalogEntry(
+      brand: 'Ford',
+      model: 'Mustang',
+      rarityScore: 45,
+      prestige: 55,
+      baseValue: 50000,
+      popularity: 78,
+      sportiness: 84,
+      collectability: 70,
+    ),
+    VehicleCatalogEntry(
+      brand: 'Lamborghini',
+      model: 'Huracán',
+      rarityScore: 94,
+      prestige: 100,
+      baseValue: 260000,
+      popularity: 18,
+      sportiness: 100,
+      collectability: 100,
+    ),
+    VehicleCatalogEntry(
+      brand: 'Tesla',
+      model: 'Model S',
+      rarityScore: 40,
+      prestige: 70,
+      baseValue: 90000,
+      popularity: 82,
+      sportiness: 78,
+      collectability: 62,
+    ),
+  ];
+
+  Rarity calculate({
+    required String brand,
+    required String model,
+    required String color,
+  }) {
+    final c = catalog.firstWhere(
+      (e) => e.brand == brand && e.model == model,
+      orElse: () => const VehicleCatalogEntry(
+        brand: '',
+        model: '',
+        rarityScore: 25,
+        prestige: 30,
+        baseValue: 25000,
+        popularity: 80,
+        sportiness: 40,
+        collectability: 25,
+      ),
+    );
+
+    final unusualColor = _unusualColorScore(color);
+    final popularityInverse = 100 - c.popularity;
+
+    final score = (
+          c.rarityScore * 0.22 +
+          c.prestige * 0.18 +
+          _valueScore(c.baseValue) * 0.15 +
+          popularityInverse * 0.12 +
+          unusualColor * 0.08 +
+          c.sportiness * 0.10 +
+          c.collectability * 0.15
+        )
+        .round();
+
+    if (score >= 82) return Rarity.legendary;
+    if (score >= 66) return Rarity.epic;
+    if (score >= 49) return Rarity.rare;
+    if (score >= 31) return Rarity.uncommon;
+    return Rarity.common;
+  }
+
+  int baseValueFor(String brand, String model) {
+    final c = catalog.where((e) => e.brand == brand && e.model == model);
+    return c.isEmpty ? 25000 : c.first.baseValue;
+  }
+
+  int _valueScore(int value) {
+    final normalized = (log(max(1, value)) / log(500000)) * 100;
+    return normalized.clamp(0, 100).round();
+  }
+
+  int _unusualColorScore(String color) {
+    const common = {'Белый', 'Чёрный', 'Серый', 'Серебристый'};
+    return common.contains(color) ? 25 : 75;
+  }
+}
+
+// -----------------------------
+// EXPERIENCE
+// -----------------------------
+
+class ExperienceService {
+  int requiredForLevel(int level) => 100 + ((level - 1) * 75) + ((level - 1) * (level - 1) * 15);
+
+  int levelFromTotalXp(int totalXp) {
+    var level = 1;
+    var xp = totalXp;
+    while (xp >= requiredForLevel(level)) {
+      xp -= requiredForLevel(level);
+      level++;
+    }
+    return level;
+  }
+
+  int xpForDiscovery(Rarity rarity) => switch (rarity) {
+        Rarity.common => 25,
+        Rarity.uncommon => 45,
+        Rarity.rare => 80,
+        Rarity.epic => 150,
+        Rarity.legendary => 300,
+      };
+
+  int xpForRace({required bool win}) => win ? 120 : 45;
+  int xpForChase() => 160;
+}
+
+// -----------------------------
+// ECONOMY
+// -----------------------------
+
+class EconomyService {
+  int discoveryReward(Rarity rarity) => switch (rarity) {
+        Rarity.common => 500,
+        Rarity.uncommon => 900,
+        Rarity.rare => 1500,
+        Rarity.epic => 3000,
+        Rarity.legendary => 7000,
+      };
+
+  int raceReward({required bool win}) => win ? 1500 : 500;
+  int chaseReward() => 1800;
+
+  int garagePrice(int newSlot) => 5000 + (newSlot - 5) * 3500;
+
+  int upgradeCost(Car car, UpgradeType type) {
+    final current = switch (type) {
+      UpgradeType.engine => car.speed,
+      UpgradeType.handling => car.handling,
+      UpgradeType.body => car.durability,
+    };
+    return max(250, (car.currentValue * 0.035 * car.level * (1 + current / 100)).round());
+  }
+
+  int salePrice(Car car) => (car.currentValue * 0.5).round();
+}
+
+// -----------------------------
+// GARAGE
+// -----------------------------
+
+class GarageService {
+  int slots = 5;
+
+  bool canStore(Car car, List<Car> cars) =>
+      cars.where((c) => c.garageSlot != null).length < slots;
+
+  void store(Car car, List<Car> cars) {
+    if (!canStore(car, cars)) {
+      throw StateError('Нет свободного места в гараже');
+    }
+    final used = cars.map((c) => c.garageSlot).whereType<int>().toSet();
+    var slot = 0;
+    while (used.contains(slot)) {
+      slot++;
+    }
+    car.garageSlot = slot;
+    car.status = CarStatus.garaged;
+  }
+
+  void remove(Car car) {
+    car.garageSlot = null;
+    car.status = CarStatus.outside;
+  }
+}
+
+// -----------------------------
+// UPGRADES / DAMAGE / REPAIR
+// -----------------------------
+
+class UpgradeService {
+  void upgrade(Car car, UpgradeType type) {
+    switch (type) {
+      case UpgradeType.engine:
+        if (car.speed >= car.maxSpeed) throw StateError('Скорость уже максимальна');
+        car.speed++;
+        break;
+      case UpgradeType.handling:
+        if (car.handling >= car.maxHandling) throw StateError('Манёвренность уже максимальна');
+        car.handling++;
+        break;
+      case UpgradeType.body:
+        if (car.durability >= car.maxDurability) throw StateError('Прочность уже максимальна');
+        car.durability++;
+        break;
+    }
+    car.level++;
+    car.currentValue = (car.currentValue * 1.012).round();
+  }
+
+  void applyDamage(Car car, int amount) {
+    final reduction = (amount * (car.durability / max(1, car.maxDurability)) * 0.35).round();
+    car.damage = (car.damage + max(1, amount - reduction)).clamp(0, 100);
+  }
+
+  void repair(Car car) => car.damage = 0;
+}
+
+// -----------------------------
+// MARKET
+// -----------------------------
+
+class MarketService {
+  int price(Car car) => EconomyService().salePrice(car);
+}
+
+// -----------------------------
+// NETWORK ABSTRACTIONS
+// -----------------------------
+
+class NetworkTransaction {
+  final String id;
+  final String type;
+  final DateTime createdAt;
+
+  NetworkTransaction({
+    required this.id,
+    required this.type,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+}
+
+abstract class RaceNetworkService {
+  Future<bool> discoverNearby();
+  Future<bool> connect(String peerId);
+  Future<bool> requestRace(String peerId, String carId, {bool stake = false});
+  Future<void> disconnect();
+}
+
+class MockRaceNetworkService implements RaceNetworkService {
+  bool connected = false;
+
+  @override
+  Future<bool> discoverNearby() async {
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    return true;
+  }
+
+  @override
+  Future<bool> connect(String peerId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    connected = true;
+    return true;
+  }
+
+  @override
+  Future<bool> requestRace(String peerId, String carId, {bool stake = false}) async {
+    if (!connected) return false;
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    return true;
+  }
+
+  @override
+  Future<void> disconnect() async => connected = false;
+}
+
+class TradeOffer {
+  final String transactionId;
+  final String offeredCarId;
+  final String requestedCarId;
+  bool firstConfirmed;
+  bool secondConfirmed;
+
+  TradeOffer({
+    required this.transactionId,
+    required this.offeredCarId,
+    required this.requestedCarId,
+    this.firstConfirmed = false,
+    this.secondConfirmed = false,
+  });
+
+  bool get ready => firstConfirmed && secondConfirmed;
+}
+
+class TradeService {
+  final Set<String> activeTransactions = {};
+
+  bool begin(String txId, String carA, String carB) {
+    if (activeTransactions.contains(carA) || activeTransactions.contains(carB)) return false;
+    activeTransactions.add(carA);
+    activeTransactions.add(carB);
+    return true;
+  }
+
+  void finish(String txId, String carA, String carB) {
+    activeTransactions.remove(carA);
+    activeTransactions.remove(carB);
+  }
+}
+
+// -----------------------------
+// STORAGE
+// -----------------------------
+
+class GameState {
+  int money;
+  int totalXp;
+  int garageSlots;
+  List<Car> cars;
+
+  GameState({
+    required this.money,
+    required this.totalXp,
+    required this.garageSlots,
+    required this.cars,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'money': money,
+        'totalXp': totalXp,
+        'garageSlots': garageSlots,
+        'cars': cars.map((c) => c.toJson()).toList(),
+      };
+
+  factory GameState.fromJson(Map<String, dynamic> j) => GameState(
+        money: j['money'] ?? 10000,
+        totalXp: j['totalXp'] ?? 0,
+        garageSlots: j['garageSlots'] ?? 5,
+        cars: ((j['cars'] ?? []) as List)
+            .map((e) => Car.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+      );
+}
+
+class GameStore {
+  final SharedPreferences prefs;
+  static const _key = 'speed_sanctuary_state_v1';
+
+  GameState state;
+
+  GameStore._(this.prefs, this.state);
+
+  static Future<GameStore> create() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_key);
+
+    if (raw == null) {
+      return GameStore._(
+        prefs,
+        GameState(money: 10000, totalXp: 0, garageSlots: 5, cars: []),
+      );
+    }
+
+    try {
+      return GameStore._(
+        prefs,
+        GameState.fromJson(jsonDecode(raw)),
+      );
+    } catch (_) {
+      return GameStore._(
+        prefs,
+        GameState(money: 10000, totalXp: 0, garageSlots: 5, cars: []),
+      );
+    }
+  }
+
+  Future<void> save() async {
+    await prefs.setString(_key, jsonEncode(state.toJson()));
+  }
+}
+
+// -----------------------------
+// APP CONTROLLER
+// -----------------------------
+
+class GameController extends ChangeNotifier {
+  final GameStore store;
+  final VehicleRecognitionService recognition;
+  final LicensePlateDetectionService plateDetection;
+  final ImagePrivacyService privacy;
+  final RarityService rarityService;
+  final ExperienceService experienceService;
+  final EconomyService economyService;
+  final GarageService garageService;
+  final UpgradeService upgradeService;
+  final MarketService marketService;
+  final RaceNetworkService networkService;
+  final TradeService tradeService;
+
+  GameController({
+    required this.store,
+    VehicleRecognitionService? recognition,
+    LicensePlateDetectionService? plateDetection,
+    ImagePrivacyService? privacy,
+    RarityService? rarityService,
+    ExperienceService? experienceService,
+    EconomyService? economyService,
+    GarageService? garageService,
+    UpgradeService? upgradeService,
+    MarketService? marketService,
+    RaceNetworkService? networkService,
+    TradeService? tradeService,
+  })  : recognition = recognition ?? MockVehicleRecognitionService(),
+        plateDetection = plateDetection ?? MockLicensePlateDetectionService(),
+        privacy = privacy ?? MockImagePrivacyService(),
+        rarityService = rarityService ?? RarityService(),
+        experienceService = experienceService ?? ExperienceService(),
+        economyService = economyService ?? EconomyService(),
+        garageService = garageService ?? GarageService(),
+        upgradeService = upgradeService ?? UpgradeService(),
+        marketService = marketService ?? MarketService(),
+        networkService = networkService ?? MockRaceNetworkService(),
+        tradeService = tradeService ?? TradeService() {
+    garageService.slots = store.state.garageSlots;
+  }
+
+  GameState get state => store.state;
+
+  int get playerLevel => experienceService.levelFromTotalXp(state.totalXp);
+
+  int get xpIntoLevel {
+    var xp = state.totalXp;
+    var level = 1;
+    while (xp >= experienceService.requiredForLevel(level)) {
+      xp -= experienceService.requiredForLevel(level);
+      level++;
+    }
+    return xp;
+  }
+
+  Future<Car> discoverFromPhoto(String imagePath) async {
+    final result = await recognition.recognize(imagePath);
+    final plate = await plateDetection.detect(imagePath);
+    final safePhoto = await privacy.maskPlates(imagePath, plate);
+
+    final rarity = rarityService.calculate(
+      brand: result.brand,
+      model: result.model,
+      color: result.color,
+    );
+
+    final base = rarityService.baseValueFor(result.brand, result.model);
+    final id = '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(99999)}';
+
+    final car = Car(
+      id: id,
+      brand: result.brand,
+      model: result.model,
+      generation: result.generation,
+      bodyType: result.bodyType,
+      color: result.color,
+      rarity: rarity,
+      baseValue: base,
+      currentValue: base,
+      speed: 50 + rarity.tier * 8,
+      handling: 45 + rarity.tier * 9,
+      durability: 45 + rarity.tier * 9,
+      maxSpeed: 80 + rarity.tier * 8,
+      maxHandling: 80 + rarity.tier * 7,
+      maxDurability: 80 + rarity.tier * 7,
+      level: 1,
+      experience: 0,
+      damage: 0,
+      photoPath: safePhoto,
+      discoveredAt: DateTime.now(),
+      status: CarStatus.outside,
+    );
+
+    state.cars.add(car);
+    state.money += economyService.discoveryReward(rarity);
+    state.totalXp += experienceService.xpForDiscovery(rarity);
+
+    await store.save();
+    notifyListeners();
+    return car;
+  }
+
+  Future<void> addDemoCar() async {
+    await discoverFromPhoto('mock://camera/${DateTime.now().millisecondsSinceEpoch}.jpg');
+  }
+
+  Future<void> putInGarage(Car car) async {
+    garageService.store(car, state.cars);
+    await store.save();
+    notifyListeners();
+  }
+
+  Future<void> removeFromGarage(Car car) async {
+    garageService.remove(car);
+    await store.save();
+    notifyListeners();
+  }
+
+  Future<bool> buyGarageSlot() async {
+    final nextSlot = state.garageSlots + 1;
+    final price = economyService.garagePrice(nextSlot);
+    if (state.money < price) return false;
+    state.money -= price;
+    state.garageSlots = nextSlot;
+    garageService.slots = nextSlot;
+    await store.save();
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> upgrade(Car car, UpgradeType type) async {
+    final cost = economyService.upgradeCost(car, type);
+    if (state.money < cost) return false;
+
+    try {
+      upgradeService.upgrade(car, type);
+    } catch (_) {
+      return false;
+    }
+
+    state.money -= cost;
+    await store.save();
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> repair(Car car) async {
+    final cost = car.repairCost;
+    if (cost <= 0) return true;
+    if (state.money < cost) return false;
+    state.money -= cost;
+    upgradeService.repair(car);
+    await store.save();
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> sell(Car car) async {
+    if (car.status == CarStatus.garaged) return false;
+    final price = marketService.price(car);
+    state.money += price;
+    state.cars.removeWhere((c) => c.id == car.id);
+    await store.save();
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> startRace(Car car, {required bool stake}) async {
+    if (!car.isUsable) throw StateError('Эта машина сейчас недоступна');
+
+    final random = Random();
+    final playerScore = car.speed * 0.45 + car.handling * 0.35 + car.durability * 0.20;
+    final botScore = 55 + random.nextInt(45);
+    final win = playerScore + random.nextDouble() * 20 >= botScore;
+
+    upgradeService.applyDamage(car, 5 + random.nextInt(21));
+
+    state.totalXp += experienceService.xpForRace(win: win);
+    state.money += economyService.raceReward(win: win);
+
+    await store.save();
+    notifyListeners();
+  }
+
+  Future<void> startChase(Car car) async {
+    car.status = CarStatus.inChase;
+    notifyListeners();
+
+    await Future<void>.delayed(const Duration(seconds: 3));
+
+    final success = Random().nextDouble() > 0.22;
+    if (success) {
+      car.status = car.garageSlot != null ? CarStatus.garaged : CarStatus.recovered;
+      state.totalXp += experienceService.xpForChase();
+      state.money += economyService.chaseReward();
+    } else {
+      // Защита от безвозвратной потери:
+      // автомобиль остаётся доступным для повторной попытки.
+      car.status = car.garageSlot != null ? CarStatus.garaged : CarStatus.outside;
+      state.totalXp += 20;
+    }
+
+    await store.save();
+    notifyListeners();
+  }
+
+  Future<void> simulateTheft(Car car) async {
+    if (car.isInGarage || car.status == CarStatus.stolen) return;
+    car.status = CarStatus.stolen;
+    await store.save();
+    notifyListeners();
+  }
+
+  Future<void> recoverImmediately(Car car) async {
+    // MVP-safe recovery: предотвращает permanent loss.
+    car.status = car.garageSlot != null ? CarStatus.garaged : CarStatus.recovered;
+    await store.save();
+    notifyListeners();
+  }
+
+  Future<void> connectBluetooth() async {
+    await networkService.discoverNearby();
+    await networkService.connect('mock-peer');
+    notifyListeners();
+  }
+}
+
+// -----------------------------
+// APP
+// -----------------------------
+
+class SpeedSanctuaryApp extends StatefulWidget {
+  final GameStore store;
+
+  const SpeedSanctuaryApp({super.key, required this.store});
+
+  @override
+  State<SpeedSanctuaryApp> createState() => _SpeedSanctuaryAppState();
+}
+
+class _SpeedSanctuaryAppState extends State<SpeedSanctuaryApp> {
+  late final GameController controller;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = GameController(store: widget.store);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'Обитель скорости',
+        theme: ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFFFF6B00),
+            brightness: Brightness.dark,
+          ),
+          scaffoldBackgroundColor: const Color(0xFF0B0D10),
+          cardTheme: const CardThemeData(color: Color(0xFF15191F)),
+        ),
+        home: HomeScreen(controller: controller),
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// HOME
+// -----------------------------
+
+class HomeScreen extends StatefulWidget {
+  final GameController controller;
+
+  const HomeScreen({super.key, required this.controller});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = [
+      DashboardScreen(controller: widget.controller),
+      CollectionScreen(controller: widget.controller),
+      GarageScreen(controller: widget.controller),
+      MarketScreen(controller: widget.controller),
+      ProfileScreen(controller: widget.controller),
+    ];
+
+    return Scaffold(
+      body: SafeArea(child: pages[index]),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: index,
+        onDestinationSelected: (v) => setState(() => index = v),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.speed), label: 'Главная'),
+          NavigationDestination(icon: Icon(Icons.collections), label: 'Коллекция'),
+          NavigationDestination(icon: Icon(Icons.garage), label: 'Гараж'),
+          NavigationDestination(icon: Icon(Icons.storefront), label: 'Рынок'),
+          NavigationDestination(icon: Icon(Icons.person), label: 'Профиль'),
+        ],
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// DASHBOARD
+// -----------------------------
+
+class DashboardScreen extends StatelessWidget {
+  final GameController controller;
+
+  const DashboardScreen({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'ОБИТЕЛЬ\nСКОРОСТИ',
+                style: TextStyle(
+                  fontSize: 30,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.5,
+                  height: 0.95,
+                ),
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text('\$${c.state.money}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('Уровень ${c.playerLevel}'),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 22),
+        _StatCard(
+          title: 'Коллекция',
+          value: '${c.state.cars.length}',
+          icon: Icons.directions_car,
+        ),
+        const SizedBox(height: 10),
+        _StatCard(
+          title: 'Гараж',
+          value: '${c.state.cars.where((x) => x.isInGarage).length}/${c.state.garageSlots}',
+          icon: Icons.garage,
+        ),
+        const SizedBox(height: 10),
+        _StatCard(
+          title: 'XP',
+          value: '${c.xpIntoLevel}/${c.experienceService.requiredForLevel(c.playerLevel)}',
+          icon: Icons.bolt,
+        ),
+        const SizedBox(height: 24),
+        FilledButton.icon(
+          onPressed: () => _discover(context),
+          icon: const Icon(Icons.camera_alt),
+          label: const Padding(
+            padding: EdgeInsets.all(14),
+            child: Text('СФОТОГРАФИРОВАТЬ МАШИНУ'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BluetoothScreen(controller: c),
+            ),
+          ),
+          icon: const Icon(Icons.bluetooth),
+          label: const Text('BLUETOOTH'),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: () => _race(context),
+          icon: const Icon(Icons.flag),
+          label: const Text('ГОНКА С БОТОМ'),
+        ),
+        const SizedBox(height: 24),
+        const Text(
+          'Быстрый старт',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Фотографируй реальные машины, собирай коллекцию, '
+          'прокачивай автомобили и участвуй в гонках.',
+          style: TextStyle(color: Colors.white70),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _discover(BuildContext context) async {
+    final car = await controller.addAndReturnDemo();
+    if (!context.mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CarDetailsScreen(
+          controller: controller,
+          car: car,
+          newlyDiscovered: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _race(BuildContext context) async {
+    final available = controller.state.cars.where((c) => c.isUsable).toList();
+    if (available.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сначала найди автомобиль.')),
+      );
+      return;
+    }
+    final car = await showModalBottomSheet<Car>(
+      context: context,
+      builder: (_) => CarPicker(cars: available),
+    );
+    if (car == null || !context.mounted) return;
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RaceScreen(controller: controller, car: car),
+      ),
+    );
+  }
+}
+
+extension _DiscoverShortcut on GameController {
+  Future<Car> addAndReturnDemo() async {
+    final before = state.cars.length;
+    await addDemoCar();
+    return state.cars[before];
+  }
+}
+
+// -----------------------------
+// COLLECTION
+// -----------------------------
+
+class CollectionScreen extends StatefulWidget {
+  final GameController controller;
+
+  const CollectionScreen({super.key, required this.controller});
+
+  @override
+  State<CollectionScreen> createState() => _CollectionScreenState();
+}
+
+class _CollectionScreenState extends State<CollectionScreen> {
+  String filter = 'Все';
+
+  @override
+  Widget build(BuildContext context) {
+    final cars = widget.controller.state.cars.where((car) {
+      if (filter == 'Все') return true;
+      return car.rarity.label == filter;
+    }).toList();
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Коллекция',
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                ),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (v) => setState(() => filter = v),
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: 'Все', child: Text('Все')),
+                  ...Rarity.values.map(
+                    (r) => PopupMenuItem(value: r.label, child: Text(r.label)),
+                  ),
+                ],
+                child: const Icon(Icons.filter_list),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: cars.isEmpty
+              ? const Center(child: Text('Коллекция пока пуста'))
+              : GridView.builder(
+                  padding: const EdgeInsets.all(12),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    childAspectRatio: 0.82,
+                    crossAxisSpacing: 10,
+                    mainAxisSpacing: 10,
+                  ),
+                  itemCount: cars.length,
+                  itemBuilder: (_, i) => CarCard(
+                    car: cars[i],
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => CarDetailsScreen(
+                          controller: widget.controller,
+                          car: cars[i],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+// -----------------------------
+// GARAGE
+// -----------------------------
+
+class GarageScreen extends StatelessWidget {
+  final GameController controller;
+
+  const GarageScreen({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final cars = controller.state.cars.where((c) => c.isInGarage).toList();
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Гараж',
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+              ),
+            ),
+            Text('${cars.length}/${controller.state.garageSlots}'),
+          ],
+        ),
+        const SizedBox(height: 16),
+        ...List.generate(
+          controller.state.garageSlots,
+          (slot) {
+            final matching = cars.where((c) => c.garageSlot == slot);
+            final car = matching.isEmpty ? null : matching.first;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: car == null
+                  ? _EmptyGarageSlot(
+                      slot: slot + 1,
+                      onTap: () => _buyOrHint(context),
+                    )
+                  : CarListTile(
+                      car: car,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => CarDetailsScreen(
+                            controller: controller,
+                            car: car,
+                          ),
+                        ),
+                      ),
+                    ),
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: () => _buyOrHint(context),
+          icon: const Icon(Icons.add),
+          label: const Text('Купить место'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _buyOrHint(BuildContext context) async {
+    final next = controller.state.garageSlots + 1;
+    final price = controller.economyService.garagePrice(next);
+    final ok = await controller.buyGarageSlot();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok ? 'Место куплено за \$$price' : 'Недостаточно денег. Нужно \$$price',
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// MARKET
+// -----------------------------
+
+class MarketScreen extends StatelessWidget {
+  final GameController controller;
+
+  const MarketScreen({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final cars = controller.state.cars.where((c) => !c.isInGarage).toList();
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          'Б/У рынок',
+          style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Продажа собственной карточки — 50% текущей стоимости.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        const SizedBox(height: 16),
+        if (cars.isEmpty)
+          const Center(child: Text('Нет автомобилей для продажи'))
+        else
+          ...cars.map(
+            (car) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: CarListTile(
+                car: car,
+                trailing: Text('\$${controller.marketService.price(car)}'),
+                onTap: () => _sell(context, car),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _sell(BuildContext context, Car car) async {
+    final price = controller.marketService.price(car);
+    final ok = await controller.sell(car);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? '${car.title} продан за \$$price' : 'Нельзя продать эту машину'),
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// PROFILE
+// -----------------------------
+
+class ProfileScreen extends StatelessWidget {
+  final GameController controller;
+
+  const ProfileScreen({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          'Профиль',
+          style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 20),
+        ListTile(
+          leading: const CircleAvatar(child: Icon(Icons.person)),
+          title: Text('Уровень ${controller.playerLevel}'),
+          subtitle: Text('${controller.state.totalXp} XP всего'),
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.directions_car),
+          title: const Text('Автомобилей'),
+          trailing: Text('${controller.state.cars.length}'),
+        ),
+        ListTile(
+          leading: const Icon(Icons.account_balance_wallet),
+          title: const Text('Баланс'),
+          trailing: Text('\$${controller.state.money}'),
+        ),
+        ListTile(
+          leading: const Icon(Icons.garage),
+          title: const Text('Мест в гараже'),
+          trailing: Text('${controller.state.garageSlots}'),
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.bluetooth),
+          title: const Text('Bluetooth'),
+          subtitle: const Text('Обмен, гонки, сделки'),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BluetoothScreen(controller: controller),
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.notifications),
+          title: const Text('Уведомления'),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => NotificationsScreen(controller: controller),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// -----------------------------
+// CAR DETAILS
+// -----------------------------
+
+class CarDetailsScreen extends StatelessWidget {
+  final GameController controller;
+  final Car car;
+  final bool newlyDiscovered;
+
+  const CarDetailsScreen({
+    super.key,
+    required this.controller,
+    required this.car,
+    this.newlyDiscovered = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(car.title),
+        actions: [
+          IconButton(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => UpgradeScreen(controller: controller, car: car),
+              ),
+            ),
+            icon: const Icon(Icons.tune),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (newlyDiscovered)
+            Container(
+              padding: const EdgeInsets.all(14),
+              margin: const EdgeInsets.only(bottom: 14),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                color: car.rarity.color.withOpacity(0.18),
+              ),
+              child: Text(
+                'НОВАЯ КАРТА • ${car.rarity.label.toUpperCase()}',
+                style: TextStyle(
+                  color: car.rarity.color,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          _CarHero(car: car),
+          const SizedBox(height: 16),
+          _InfoGrid(car: car),
+          const SizedBox(height: 16),
+          Text('Состояние: ${100 - car.damage}%', style: const TextStyle(fontWeight: FontWeight.bold)),
+          LinearProgressIndicator(value: 1 - car.damage / 100),
+          const SizedBox(height: 16),
+          if (car.damage > 0)
+            FilledButton.icon(
+              onPressed: () async {
+                final ok = await controller.repair(car);
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      ok
+                          ? 'Машина отремонтирована'
+                          : 'Недостаточно денег: \$${car.repairCost}',
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.build),
+              label: Text('Ремонт за \$${car.repairCost}'),
+            ),
+          const SizedBox(height: 8),
+          if (!car.isInGarage)
+            OutlinedButton.icon(
+              onPressed: () async {
+                try {
+                  await controller.putInGarage(car);
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Машина помещена в гараж')),
+                  );
+                } catch (e) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('$e')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.garage),
+              label: const Text('Поставить в гараж'),
+            )
+          else
+            OutlinedButton.icon(
+              onPressed: () => controller.removeFromGarage(car),
+              icon: const Icon(Icons.logout),
+              label: const Text('Выпустить из гаража'),
+            ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: car.status == CarStatus.outside
+                ? () async {
+                    await controller.simulateTheft(car);
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('⚠ Машина угнана! Открыто окно погони.')),
+                    );
+                  }
+                : null,
+            icon: const Icon(Icons.warning),
+            label: const Text('Симулировать угон (MVP)'),
+          ),
+          if (car.status == CarStatus.stolen) ...[
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ChaseScreen(controller: controller, car: car),
+                ),
+              ),
+              icon: const Icon(Icons.directions_car),
+              label: const Text('НАЧАТЬ ПОГОНЮ'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// UPGRADE
+// -----------------------------
+
+class UpgradeScreen extends StatelessWidget {
+  final GameController controller;
+  final Car car;
+
+  const UpgradeScreen({super.key, required this.controller, required this.car});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Прокачка')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _UpgradeRow(
+            icon: Icons.speed,
+            title: 'ENGINE',
+            value: car.speed,
+            max: car.maxSpeed,
+            cost: controller.economyService.upgradeCost(car, UpgradeType.engine),
+            onTap: () => _upgrade(context, UpgradeType.engine),
+          ),
+          const SizedBox(height: 10),
+          _UpgradeRow(
+            icon: Icons.turn_right,
+            title: 'HANDLING',
+            value: car.handling,
+            max: car.maxHandling,
+            cost: controller.economyService.upgradeCost(car, UpgradeType.handling),
+            onTap: () => _upgrade(context, UpgradeType.handling),
+          ),
+          const SizedBox(height: 10),
+          _UpgradeRow(
+            icon: Icons.shield,
+            title: 'BODY',
+            value: car.durability,
+            max: car.maxDurability,
+            cost: controller.economyService.upgradeCost(car, UpgradeType.body),
+            onTap: () => _upgrade(context, UpgradeType.body),
+          ),
+          const SizedBox(height: 20),
+          Text('Уровень машины: ${car.level}'),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _upgrade(BuildContext context, UpgradeType type) async {
+    final ok = await controller.upgrade(car, type);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? 'Улучшение установлено' : 'Недостаточно денег или достигнут максимум')),
+    );
+  }
+}
+
+// -----------------------------
+// RACE
+// -----------------------------
+
+class RaceScreen extends StatefulWidget {
+  final GameController controller;
+  final Car car;
+
+  const RaceScreen({super.key, required this.controller, required this.car});
+
+  @override
+  State<RaceScreen> createState() => _RaceScreenState();
+}
+
+class _RaceScreenState extends State<RaceScreen> {
+  double playerX = 0.5;
+  double botX = 0.5;
+  double progress = 0;
+  bool finished = false;
+  bool? win;
+  Timer? timer;
+
+  @override
+  void initState() {
+    super.initState();
+    timer = Timer.periodic(const Duration(milliseconds: 80), (_) {
+      if (finished) return;
+      setState(() {
+        progress += 0.012 + widget.car.speed / 20000;
+        playerX = (playerX + (Random().nextDouble() - 0.5) * 0.08).clamp(0.12, 0.88);
+        botX = (botX + (Random().nextDouble() - 0.5) * 0.06).clamp(0.12, 0.88);
+        if (progress >= 1) {
+          finished = true;
+          win = widget.car.speed + widget.car.handling >= 125 || Random().nextDouble() > 0.45;
+        }
+      });
+
+      if (finished) {
+        _finish();
+      }
+    });
+  }
+
+  Future<void> _finish() async {
+    timer?.cancel();
+    await widget.controller.startRace(widget.car, stake: false);
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('ГОНКА')),
+      body: Column(
+        children: [
+          Expanded(
+            child: CustomPaint(
+              painter: RacePainter(
+                playerX: playerX,
+                botX: botX,
+                progress: progress,
+              ),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: finished
+                ? Column(
+                    children: [
+                      Text(
+                        win == true ? 'ПОБЕДА!' : 'ПОРАЖЕНИЕ',
+                        style: TextStyle(
+                          fontSize: 34,
+                          fontWeight: FontWeight.w900,
+                          color: win == true ? Colors.green : Colors.red,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Продолжить'),
+                      ),
+                    ],
+                  )
+                : Column(
+                    children: [
+                      LinearProgressIndicator(value: progress),
+                      const SizedBox(height: 8),
+                      const Text('Нажимай на левую/правую сторону экрана для манёвра'),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton(
+                              onPressed: () => setState(
+                                () => playerX = (playerX - 0.08).clamp(0.12, 0.88),
+                              ),
+                              child: const Icon(Icons.arrow_back),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: FilledButton(
+                              onPressed: () => setState(
+                                () => playerX = (playerX + 0.08).clamp(0.12, 0.88),
+                              ),
+                              child: const Icon(Icons.arrow_forward),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// CHASE
+// -----------------------------
+
+class ChaseScreen extends StatefulWidget {
+  final GameController controller;
+  final Car car;
+
+  const ChaseScreen({super.key, required this.controller, required this.car});
+
+  @override
+  State<ChaseScreen> createState() => _ChaseScreenState();
+}
+
+class _ChaseScreenState extends State<ChaseScreen> {
+  int seconds = 600;
+  Timer? timer;
+  bool ended = false;
+
+  @override
+  void initState() {
+    super.initState();
+    timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (seconds <= 0) {
+        timer?.cancel();
+        return;
+      }
+      setState(() => seconds--);
+    });
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _catch() async {
+    if (ended) return;
+    ended = true;
+    timer?.cancel();
+    await widget.controller.startChase(widget.car);
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Погоня завершена'),
+        content: Text(
+          widget.car.status == CarStatus.inChase
+              ? 'Ошибка состояния'
+              : 'Автомобиль обработан системой погони.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.popUntil(context, (r) => r.isFirst),
+            child: const Text('ОК'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mins = seconds ~/ 60;
+    final secs = seconds % 60;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('ПОГОНЯ')),
+      body: Column(
+        children: [
+          Expanded(
+            child: CustomPaint(
+              painter: ChasePainter(),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Text(
+                  '$mins:${secs.toString().padLeft(2, '0')}',
+                  style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w900),
+                ),
+                const Text('Окно погони — 10 минут'),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  onPressed: _catch,
+                  icon: const Icon(Icons.local_police),
+                  label: const Text('ПЕРЕХВАТИТЬ'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// BLUETOOTH
+// -----------------------------
+
+class BluetoothScreen extends StatefulWidget {
+  final GameController controller;
+
+  const BluetoothScreen({super.key, required this.controller});
+
+  @override
+  State<BluetoothScreen> createState() => _BluetoothScreenState();
+}
+
+class _BluetoothScreenState extends State<BluetoothScreen> {
+  bool scanning = false;
+  bool connected = false;
+
+  Future<void> _scan() async {
+    setState(() => scanning = true);
+    await widget.controller.connectBluetooth();
+    if (!mounted) return;
+    setState(() {
+      scanning = false;
+      connected = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cars = widget.controller.state.cars;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Bluetooth')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          ListTile(
+            leading: Icon(
+              connected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+            ),
+            title: Text(connected ? 'Игрок подключён' : 'Нет подключения'),
+            subtitle: const Text('В production здесь будет реальный BLE/P2P слой'),
+          ),
+          FilledButton.icon(
+            onPressed: scanning ? null : _scan,
+            icon: const Icon(Icons.search),
+            label: Text(scanning ? 'Поиск...' : 'Найти игроков'),
+          ),
+          const SizedBox(height: 18),
+          const Text('Обмен карточками', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          if (cars.isEmpty)
+            const Text('Нет карточек для обмена')
+          else
+            ...cars.take(5).map(
+              (car) => Card(
+                child: ListTile(
+                  leading: CarIcon(car: car),
+                  title: Text(car.title),
+                  subtitle: Text(car.rarity.label),
+                  trailing: connected
+                      ? OutlinedButton(
+                          onPressed: () => _tradeMock(context, car),
+                          child: const Text('Предложить'),
+                        )
+                      : null,
+                ),
+              ),
+            ),
+          const SizedBox(height: 16),
+          const Text(
+            'Протокол сделки: transaction ID → предложение → '
+            'подтверждение A → подтверждение B → атомарная передача. '
+            'Повторный transaction ID должен быть отклонён.',
+            style: TextStyle(color: Colors.white70),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _tradeMock(BuildContext context, Car car) {
+    final tx = 'tx_${DateTime.now().microsecondsSinceEpoch}';
+    final ok = widget.controller.tradeService.begin(tx, car.id, 'remote-card');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok
+            ? 'Сделка $tx создана. Требуются подтверждения обеих сторон.'
+            : 'Карточка уже участвует в сделке.'),
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// NOTIFICATIONS
+// -----------------------------
+
+class NotificationsScreen extends StatelessWidget {
+  final GameController controller;
+
+  const NotificationsScreen({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final stolen = controller.state.cars.where((c) => c.status == CarStatus.stolen).toList();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Уведомления')),
+      body: stolen.isEmpty
+          ? const Center(child: Text('Новых уведомлений нет'))
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: stolen.map(
+                (car) {
+                  return Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.warning, color: Colors.orange),
+                      title: Text('${car.title} угнана'),
+                      subtitle: const Text('Открыто 10-минутное окно погони'),
+                      trailing: FilledButton(
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChaseScreen(
+                              controller: controller,
+                              car: car,
+                            ),
+                          ),
+                        ),
+                        child: const Text('Погоня'),
+                      ),
+                    ),
+                  );
+                },
+              ).toList(),
+            ),
+    );
+  }
+}
+
+// -----------------------------
+// WIDGETS
+// -----------------------------
+
+class CarCard extends StatelessWidget {
+  final Car car;
+  final VoidCallback onTap;
+
+  const CarCard({super.key, required this.car, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                color: car.rarity.color.withOpacity(0.12),
+                child: CarIcon(car: car, large: true),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    car.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    car.rarity.label,
+                    style: TextStyle(
+                      color: car.rarity.color,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text('\$${car.currentValue}'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class CarListTile extends StatelessWidget {
+  final Car car;
+  final VoidCallback onTap;
+  final Widget? trailing;
+
+  const CarListTile({
+    super.key,
+    required this.car,
+    required this.onTap,
+    this.trailing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ListTile(
+        onTap: onTap,
+        leading: CarIcon(car: car),
+        title: Text(car.title),
+        subtitle: Text('${car.rarity.label} • ${car.status.label}'),
+        trailing: trailing ?? Text('\$${car.currentValue}'),
+      ),
+    );
+  }
+}
+
+class CarIcon extends StatelessWidget {
+  final Car car;
+  final bool large;
+
+  const CarIcon({super.key, required this.car, this.large = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = switch (car.bodyType) {
+      BodyType.motorcycle => Icons.two_wheeler,
+      BodyType.van => Icons.airport_shuttle,
+      BodyType.pickup => Icons.local_shipping,
+      BodyType.suv || BodyType.crossover => Icons.directions_car,
+      _ => Icons.directions_car,
+    };
+
+    return Center(
+      child: Icon(
+        icon,
+        size: large ? 92 : 42,
+        color: car.rarity.color,
+      ),
+    );
+  }
+}
+
+class _CarHero extends StatelessWidget {
+  final Car car;
+
+  const _CarHero({required this.car});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Container(
+        height: 210,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          gradient: LinearGradient(
+            colors: [
+              car.rarity.color.withOpacity(0.30),
+              Colors.transparent,
+            ],
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CarIcon(car: car, large: true),
+            Text(
+              car.title,
+              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
+            ),
+            Text('${car.generation} • ${car.color} • ${car.bodyType.label}'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoGrid extends StatelessWidget {
+  final Car car;
+
+  const _InfoGrid({required this.car});
+
+  @override
+  Widget build(BuildContext context) {
+    return GridView.count(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisCount: 3,
+      childAspectRatio: 1.3,
+      children: [
+        _MiniStat(label: 'SPEED', value: car.speed),
+        _MiniStat(label: 'HANDLING', value: car.handling),
+        _MiniStat(label: 'BODY', value: car.durability),
+      ],
+    );
+  }
+}
+
+class _MiniStat extends StatelessWidget {
+  final String label;
+  final int value;
+
+  const _MiniStat({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 11, color: Colors.white60)),
+          const SizedBox(height: 5),
+          Text('$value', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final IconData icon;
+
+  const _StatCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ListTile(
+        leading: Icon(icon),
+        title: Text(title),
+        trailing: Text(
+          value,
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyGarageSlot extends StatelessWidget {
+  final int slot;
+  final VoidCallback onTap;
+
+  const _EmptyGarageSlot({required this.slot, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: InkWell(
+        onTap: onTap,
+        child: const Padding(
+          padding: EdgeInsets.all(18),
+          child: Row(
+            children: [
+              Icon(Icons.add_box_outlined),
+              SizedBox(width: 14),
+              Text('Свободное место'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UpgradeRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final int value;
+  final int max;
+  final int cost;
+  final VoidCallback onTap;
+
+  const _UpgradeRow({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.max,
+    required this.cost,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = value / max;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(icon),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                Text('$value / $max'),
+                const SizedBox(width: 10),
+                FilledButton(
+                  onPressed: value >= max ? null : onTap,
+                  child: Text('\$$cost'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(value: progress.clamp(0, 1)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class CarPicker extends StatelessWidget {
+  final List<Car> cars;
+
+  const CarPicker({super.key, required this.cars});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        shrinkWrap: true,
+        children: [
+          const Text(
+            'Выбери автомобиль',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 10),
+          ...cars.map(
+            (car) => ListTile(
+              leading: CarIcon(car: car),
+              title: Text(car.title),
+              subtitle: Text('${car.speed} speed • ${car.handling} handling'),
+              onTap: () => Navigator.pop(context, car),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// -----------------------------
+// PAINTERS
+// -----------------------------
+
+class RacePainter extends CustomPainter {
+  final double playerX;
+  final double botX;
+  final double progress;
+
+  RacePainter({
+    required this.playerX,
+    required this.botX,
+    required this.progress,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final road = Paint()..color = const Color(0xFF20242A);
+    canvas.drawRect(
+      Rect.fromLTWH(size.width * .15, 0, size.width * .70, size.height),
+      road,
+    );
+
+    final lane = Paint()
+      ..color = Colors.white24
+      ..strokeWidth = 3;
+
+    for (double y = -30; y < size.height; y += 50) {
+      final offset = (progress * 150) % 50;
+      canvas.drawLine(
+        Offset(size.width * .50, y + offset),
+        Offset(size.width * .50, y + offset + 24),
+        lane,
+      );
+    }
+
+    _drawCar(
+      canvas,
+      Offset(size.width * playerX, size.height * .78),
+      Colors.orange,
+    );
+    _drawCar(
+      canvas,
+      Offset(size.width * botX, size.height * .25),
+      Colors.blue,
+    );
+  }
+
+  void _drawCar(Canvas canvas, Offset center, Color color) {
+    final p = Paint()..color = color;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: center, width: 34, height: 62),
+        const Radius.circular(9),
+      ),
+      p,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant RacePainter oldDelegate) => true;
+}
+
+class ChasePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final road = Paint()..color = const Color(0xFF20242A);
+    canvas.drawRect(
+      Rect.fromLTWH(size.width * .12, 0, size.width * .76, size.height),
+      road,
+    );
+
+    final side = Paint()..color = Colors.green.withOpacity(.18);
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width * .12, size.height), side);
+    canvas.drawRect(
+      Rect.fromLTWH(size.width * .88, 0, size.width * .12, size.height),
+      side,
+    );
+
+    final lane = Paint()
+      ..color = Colors.white24
+      ..strokeWidth = 3;
+
+    for (double y = 0; y < size.height; y += 50) {
+      canvas.drawLine(
+        Offset(size.width * .50, y),
+        Offset(size.width * .50, y + 24),
+        lane,
+      );
+    }
+
+    final police = Paint()..color = Colors.orange;
+    final criminal = Paint()..color = Colors.red;
+
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(size.width * .50, size.height * .72),
+          width: 38,
+          height: 70,
+        ),
+        const Radius.circular(10),
+      ),
+      police,
+    );
+
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(size.width * .50, size.height * .28),
+          width: 38,
+          height: 70,
+        ),
+        const Radius.circular(10),
+      ),
+      criminal,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant ChasePainter oldDelegate) => false;
+}
+
+// -----------------------------
+// MAIN ENTRY REPLACEMENT
+// -----------------------------
+//
+// Dart не позволяет переопределить main. Поэтому выше объявлен main()
+// с запуском SpeedSanctuaryApp. Ниже приведён правильный класс-обёртка,
+// а SpeedSanctuaryApp делегирует в него.
+//
+// Это исправлено непосредственно здесь:
+//
+// SpeedSanctuaryApp не используется как отдельная бизнес-логика;
+// он должен вернуть RootApp.
+//
+// Для сохранения одного файла класс определён повторно нельзя,
+// поэтому используем отдельный internal root через build.
+//
+// -----------------------------
+// PATCH: SpeedSanctuaryApp implementation
+// -----------------------------
+
+// ignore_for_file: unused_element
