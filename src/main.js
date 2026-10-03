@@ -1,4 +1,3 @@
-import './styles.css';
 import {createPlayer,createVehicle,RARITY_META,UpgradeType} from './domain/models.js';
 import {PlayerRepository} from './storage/player-repository.js';
 import {RarityService} from './services/rarity-service.js'; import {EconomyService} from './services/economy-service.js'; import {ExperienceService} from './services/experience-service.js'; import {GarageService} from './services/garage-service.js'; import {VehicleService} from './services/vehicle-service.js'; import {MarketService} from './services/market-service.js'; import {FallbackVehicleRecognitionService,ImagePrivacyService,LicensePlateDetectionService} from './recognition/services.js'; import {RaceEngine} from './game/race-engine.js';

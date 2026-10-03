@@ -3,5 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "dev": "node server.js", "build": "node --check src/main.js && node --check server.js", "test": "node --test", "check": "npm run build" }
+  "scripts": {
+    "dev": "node server.js",
+    "build": "node --check src/main.js && node --check server.js",
+    "test": "node --test",
+    "check": "npm run build",
+    "android:prepare": "node scripts/prepare-android-assets.mjs",
+    "android:apk": "npm run android:prepare && gradle -p android :app:assembleDebug"
+  }
 }
