@@ -1,5 +1,6 @@
-/** Replace these ports with ML/server implementations without changing UI/domain. */
-export class LicensePlateDetectionService { async detect(){ return []; } }
-export class ImagePrivacyService { constructor(detector){this.detector=detector;} async sanitize(photo){ const plates=await this.detector.detect(photo); return { photo, redactedRegions:plates.map(({x,y,width,height})=>({x,y,width,height})), plateNumberStored:false }; } }
-export class VehicleRecognitionService { async recognize(){ throw new Error('Recognition service is not configured'); } }
-export class FallbackVehicleRecognitionService extends VehicleRecognitionService { async recognize(){ const candidates=[{brand:'Porsche',model:'911 Carrera',generation:'992',bodyType:'coupe',color:'#d94444',baseValue:120000,speed:185,handling:88,durability:72,modelRarity:22,collectible:12,sportiness:24,commonness:5},{brand:'Toyota',model:'GR86',generation:'ZN8',bodyType:'coupe',color:'#4ba8ff',baseValue:32000,speed:128,handling:71,durability:70,modelRarity:9,collectible:3,sportiness:8,commonness:13}]; return candidates[Math.floor(Date.now()/1000)%candidates.length]; } }
+import {VEHICLE_CATALOG, CAR_COLORS, COLOR_HEX} from '../data/vehicle-catalog.js';
+/** Production adapters can replace these ports without touching UI or gameplay. */
+export class LicensePlateDetectionService { async detect(){return [];} }
+export class ImagePrivacyService { constructor(detector){this.detector=detector;} async sanitize(photo){const plates=await this.detector.detect(photo);return {photo,redactedRegions:plates.map(({x,y,width,height})=>({x,y,width,height})),plateNumberStored:false};} }
+export class VehicleRecognitionService { async recognize(){throw new Error('Recognition service is not configured');} }
+export class FallbackVehicleRecognitionService extends VehicleRecognitionService { async recognize(){const entry=VEHICLE_CATALOG[Math.floor(Date.now()/1000)%VEHICLE_CATALOG.length];const name=CAR_COLORS[Math.floor(Date.now()/1000)%CAR_COLORS.length];return {...entry,color:name,colorHex:COLOR_HEX[name],confidence:.9};} }

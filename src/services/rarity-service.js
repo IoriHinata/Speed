@@ -1,5 +1,11 @@
-import { Rarity } from '../domain/models.js';
-const prestige = { Ferrari:28, Lamborghini:30, Porsche:20, McLaren:30, Bugatti:40, Toyota:3, Honda:4, BMW:12, Mercedes:15, Tesla:13, Mazda:5, Ford:6 };
-const unusual = new Set(['#ffd700','#b77cff','#ff69b4','#00d4c7']);
-/** Deterministic and data-driven scoring; catalogue fields may extend it. */
-export class RarityService { calculate(v) { const score = (v.modelRarity??10) + (prestige[v.brand]??8) + Math.min(25, Math.floor((v.baseValue??0)/10000)) + (v.collectible??0) + (v.sportiness??Math.max(0,((v.speed??80)-100)/4)) + (unusual.has(v.color)?8:0) - (v.commonness??10); if(score>=65)return Rarity.LEGENDARY; if(score>=48)return Rarity.EPIC; if(score>=32)return Rarity.RARE; if(score>=18)return Rarity.UNCOMMON; return Rarity.COMMON; } }
+import {Rarity} from '../domain/models.js';
+const brandPrestige={Bugatti:100,Lamborghini:100,Ferrari:96,Porsche:90,BMW:72,Toyota:58};
+const commonColors=new Set(['Белый','Чёрный','Серый','Серебристый']);
+/** Weighted, deterministic scoring. Catalogue entries are extensible without UI changes. */
+export class RarityService {
+  calculate(vehicle) {
+    const rarityScore=vehicle.rarityScore??vehicle.modelRarity??25, prestige=vehicle.prestige??brandPrestige[vehicle.brand]??30, valueScore=Math.max(0,Math.min(100,Math.round(Math.log(Math.max(1,vehicle.baseValue??25000))/Math.log(500000)*100))), popularityInverse=100-(vehicle.popularity??vehicle.commonness??80), colorScore=commonColors.has(vehicle.color)?25:75, sportiness=vehicle.sportiness??40, collectability=vehicle.collectability??vehicle.collectible??25;
+    const score=Math.round(rarityScore*.22+prestige*.18+valueScore*.15+popularityInverse*.12+colorScore*.08+sportiness*.10+collectability*.15);
+    if(score>=82)return Rarity.LEGENDARY;if(score>=66)return Rarity.EPIC;if(score>=49)return Rarity.RARE;if(score>=31)return Rarity.UNCOMMON;return Rarity.COMMON;
+  }
+}
