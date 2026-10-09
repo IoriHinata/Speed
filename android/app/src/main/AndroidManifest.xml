@@ -1,11 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.CAMERA" />
-    <application android:allowBackup="true" android:label="Обитель скорости" android:theme="@style/AppTheme" android:usesCleartextTraffic="false">
+    <application android:allowBackup="true" android:label="Поля — блокнот автора" android:theme="@style/AppTheme" android:usesCleartextTraffic="false" android:icon="@drawable/ic_launcher">
         <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
     </application>
 </manifest>
